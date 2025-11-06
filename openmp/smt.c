@@ -10,11 +10,12 @@ double an_func(double x, double y, double z, double t, double ax, double ay, dou
     return sin(2 * PI * ax * x) * sin(PI * ay * y) * sin(PI * az * z) * cos(a_t * t + 2 * PI);
 }
 
-double check_layer(int n, double u[n][n][n], double ax, double ay, double az, double a_t, double hx, double hy, double hz, double t) {
+double check_layer(int n, double u[n][n][n], double ax, double ay, double az, double a_t, double hx, double hy, double hz, double t, int threads) {
     double max_dev = 0; //max deviation
 
     for (int i = 0; i <= n; i++) {
         for (int j = 0; j <= n; j++) {
+#pragma omp parallel for num_threads(threads) reduction(max:max_dev)
             for (int k = 0; k <= n; k++) {
                 double target = an_func(i * hx, j * hy, k * hz, t, ax, ay, az, a_t);
                 double tmp_dev = fabs(u[i != n ? i : 0][j != n ? j : 0][k != n ? k : 0] - target);
@@ -48,7 +49,10 @@ double laplas_v2(int n, double u[n][n][n], double sqhx, double sqhy, double sqhz
            (u[i][j][kminus] - 2 * u[i][j][k] + u[i][j][kplus]) / sqhz;
 }
 
-void next_iter(int n, double arr[n][n][n], double cur[n][n][n], double sqhx, double sqhy, double sqhz, double sqathau) {
+void next_iter(int n, double arr[n][n][n], double cur[n][n][n], double sqhx, double sqhy, double sqhz, double sqathau, int t) {
+#pragma omp parallel num_threads(t)
+{
+    #pragma omp for collapse(3) nowait
     for (int i = 1; i < n - 1; i++) {
         for (int j = 1; j < n - 1; j++) {
             for (int k = 1; k < n - 1; k++) {
@@ -58,6 +62,7 @@ void next_iter(int n, double arr[n][n][n], double cur[n][n][n], double sqhx, dou
         }
     }
 
+    #pragma omp for collapse(2) nowait
     for (int j = 1; j < n - 1; j++) {
         for (int k = 1; k < n - 1; k++) {
             arr[0][j][k] = sqathau * laplas_v2(n, cur, sqhx, sqhy, sqhz, 0, j, k) +
@@ -67,6 +72,7 @@ void next_iter(int n, double arr[n][n][n], double cur[n][n][n], double sqhx, dou
         }
     }
 
+    #pragma omp for collapse(2) nowait
     for (int i = 1; i < n - 1; i++) {
         for (int j = 1; j < n - 1; j++) {
             arr[i][j][n - 1] = sqathau * laplas_v2(n, cur, sqhx, sqhy, sqhz, i, j, n - 1) +
@@ -74,6 +80,7 @@ void next_iter(int n, double arr[n][n][n], double cur[n][n][n], double sqhx, dou
         }
     }
 
+    #pragma omp for collapse(2) nowait
     for (int i = 1; i < n - 1; i++) {
         for (int k = 1; k < n - 1; k++) {
             arr[i][n - 1][k] = sqathau * laplas_v2(n, cur, sqhx, sqhy, sqhz, i, n - 1, k) +
@@ -81,6 +88,7 @@ void next_iter(int n, double arr[n][n][n], double cur[n][n][n], double sqhx, dou
         }
     }
 
+    #pragma omp for nowait
     for (int k = 1; k < n - 1; k++) {
         arr[0][n - 1][k] = sqathau * laplas_v2(n, cur, sqhx, sqhy, sqhz, 0, n - 1, k) +
                            2 * cur[0][n - 1][k] - arr[0][n - 1][k];
@@ -88,6 +96,7 @@ void next_iter(int n, double arr[n][n][n], double cur[n][n][n], double sqhx, dou
                                2 * cur[n - 1][n - 1][k] - arr[n - 1][n - 1][k];
     }
 
+    #pragma omp for nowait
     for (int j = 1; j < n - 1; j++) {
         arr[0][j][n - 1] = sqathau * laplas_v2(n, cur, sqhx, sqhy, sqhz, 0, j, n - 1) +
                            2 * cur[0][j][n - 1] - arr[0][j][n - 1];
@@ -95,11 +104,12 @@ void next_iter(int n, double arr[n][n][n], double cur[n][n][n], double sqhx, dou
                                2 * cur[n - 1][j][n - 1] - arr[n - 1][j][n - 1];
     }
 
+    #pragma omp for nowait
     for (int i = 1; i < n - 1; i++) {
         arr[i][n - 1][n - 1] = sqathau * laplas_v2(n, cur, sqhx, sqhy, sqhz, i, n - 1, n - 1) +
                                2 * cur[i][n - 1][n - 1] - arr[i][n - 1][n - 1];
     }
-
+}
     arr[0][n - 1][n - 1] = sqathau * laplas_v2(n, cur, sqhx, sqhy, sqhz, 0, n - 1, n - 1) +
                            2 * cur[0][n - 1][n - 1] - arr[0][n - 1][n - 1];
 
@@ -108,6 +118,10 @@ void next_iter(int n, double arr[n][n][n], double cur[n][n][n], double sqhx, dou
 }
 
 int main (int argc, char** argv) {
+    if (argc < 8) {
+        printf("Not enough arguments.\n");
+        exit(1);
+    }
     double lx, ly, lz;
     sscanf(argv[1], "%lf", &lx);
     sscanf(argv[2], "%lf", &ly);
@@ -120,6 +134,13 @@ int main (int argc, char** argv) {
     double a_t = (sqrt(4 / (lx * lx) + 1 / (ly * ly) + 1 / (lz * lz))) / 2;
 
     int n = atoi(argv[4]);
+
+    double time;
+    sscanf(argv[5], "%lf", &time);
+    int steps = atoi(argv[6]);
+    int threads = atoi(argv[7]);
+
+    double sqathau = (time / steps) * (time / steps) / (4 * PI * PI);
 
     void* ptr_u0 = calloc(n * n * n, sizeof(double));
     void* ptr_u1 = calloc(n * n * n, sizeof(double));
@@ -135,9 +156,31 @@ int main (int argc, char** argv) {
         for (int j = 0; j < n; j++) {
             for (int k = 0; k < n; k++) {
                 u0[i][j][k] = an_func(i * hx, j * hy, k * hz, 0, ax, ay, az, a_t);
+                u1[i][j][k] = u0[i][j][k];
             }
         }
     }
+
+    
+    next_iter(n, u1, u0, hx * hx, hy * hy, hz * hz, sqathau / 2, threads);
+    printf("Max deviation u0: %.9lf\n", check_layer(n, u0, ax, ay, az, a_t, hx, hy, hz, 0, threads));
+    printf("Max deviation u1: %.9lf\n", check_layer(n, u1, ax, ay, az, a_t, hx, hy, hz, time / steps, threads));
+
+    double (*arr)[n][n] = u0;
+    double (*cur)[n][n] = u1;
+    double (*tmp)[n][n];
+
+    double start_time, end_time;
+    start_time = omp_get_wtime();
+    for (int i = 2; i <= steps; i++) {
+        next_iter(n, arr, cur, hx * hx, hy * hy, hz * hz, sqathau, threads);
+        tmp = cur;
+        cur = arr;
+        arr = tmp;
+        printf("Max deviation u%d: %.9lf\n", i, check_layer(n, cur, ax, ay, az, a_t, hx, hy, hz, i * time / steps, threads));
+    }
+    end_time = omp_get_wtime();
+    printf("Time spent: %0.6lf\n", end_time - start_time);
 
     free(ptr_u0);
     free(ptr_u1);
